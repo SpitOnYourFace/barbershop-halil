@@ -4,6 +4,7 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const compression = require('compression');
 const session = require('express-session');
 const path = require('path');
 
@@ -28,6 +29,8 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : ['http://localhost:3000'];
 
+app.use(compression());
+
 app.use(cors({
     origin: function(origin, callback) {
         if (!origin) return callback(null, true);
@@ -39,7 +42,6 @@ app.use(cors({
     },
     credentials: true
 }));
-
 app.use(bodyParser.json());
 
 // Trust proxy in production (Render, Railway, etc.)
@@ -59,7 +61,14 @@ app.use(session({
     }
 }));
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+    maxAge: '7d',
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache');
+        }
+    }
+}));
 
 // Database Setup
 const db = new sqlite3.Database('./appointments.db', (err) => {
@@ -100,6 +109,11 @@ db.serialize(() => {
         reason TEXT,
         blockedAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+
+    // Performance indices
+    db.run("CREATE INDEX IF NOT EXISTS idx_appt_date_status ON appointments(date, status)");
+    db.run("CREATE INDEX IF NOT EXISTS idx_appt_phone ON appointments(clientPhone)");
+    db.run("CREATE INDEX IF NOT EXISTS idx_appt_code ON appointments(confirmationCode)");
 
     // Migrations for existing databases
     db.all("PRAGMA table_info(appointments)", (err, columns) => {
@@ -279,8 +293,8 @@ app.post('/api/book', (req, res) => {
         if (err) return res.status(500).json({ error: "Database error" });
         if (row) return res.status(409).json({ error: "Slot already taken" });
 
-        const stmt = db.prepare("INSERT INTO appointments (date, time, service, price, clientName, clientPhone, clientEmail, confirmationCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        stmt.run(date, time, service, validatedPrice, sanitizedName, cleanPhone, sanitizedEmail, confirmationCode, function(err) {
+        const stmt = db.prepare("INSERT INTO appointments (date, time, service, price, clientName, clientPhone, clientEmail, confirmationCode, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        stmt.run(date, time, service, validatedPrice, sanitizedName, cleanPhone, sanitizedEmail, confirmationCode, new Date().toISOString(), function(err) {
             if (err) return res.status(500).json({ error: "Failed to create appointment" });
 
             // Notify admin via Telegram

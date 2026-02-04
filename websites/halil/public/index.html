@@ -33,11 +33,19 @@
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&family=Roboto:wght@300;400;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&family=Roboto:wght@300;400;700&display=swap"></noscript>
 
+    <!-- Critical CSS first -->
     <link rel="stylesheet" href="style.css">
-    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+
+    <!-- Non-critical: Font Awesome + AOS (deferred) -->
+    <link rel="preload" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" onload="this.onload=null;this.rel='stylesheet'">
+    <link rel="preload" as="style" href="https://unpkg.com/aos@2.3.1/dist/aos.css" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        <link rel="stylesheet" href="https://unpkg.com/aos@2.3.1/dist/aos.css">
+    </noscript>
 </head>
 <body>
 
@@ -436,11 +444,21 @@
         }
     </style>
 
-    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js" defer></script>
     <script>
-        AOS.init({
-            duration: 800,
-            once: true
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof AOS !== 'undefined') {
+                AOS.init({ duration: 800, once: true });
+            } else {
+                // AOS still loading, wait for it
+                const waitAOS = setInterval(() => {
+                    if (typeof AOS !== 'undefined') {
+                        clearInterval(waitAOS);
+                        AOS.init({ duration: 800, once: true });
+                    }
+                }, 50);
+                setTimeout(() => clearInterval(waitAOS), 5000);
+            }
         });
 
         // Service prices map (matching server-side)
@@ -545,17 +563,18 @@
             selectedTime = null;
         }
 
-        let statusCheckInterval = null;
+        let statusCheckTimeout = null;
         let currentBookingCode = null;
+        let pollCount = 0;
+        const POLL_INTERVALS = [3, 5, 5, 10, 10, 15, 15, 30]; // seconds
 
         function closeSuccess() {
             document.getElementById("successModal").style.display = "none";
-            // Stop polling when closed
-            if (statusCheckInterval) {
-                clearInterval(statusCheckInterval);
-                statusCheckInterval = null;
+            if (statusCheckTimeout) {
+                clearTimeout(statusCheckTimeout);
+                statusCheckTimeout = null;
             }
-            // Reset to pending state for next booking
+            pollCount = 0;
             document.getElementById("statusPending").style.display = "block";
             document.getElementById("statusConfirmed").style.display = "none";
             document.getElementById("statusRejected").style.display = "none";
@@ -565,45 +584,44 @@
             currentBookingCode = code;
             document.getElementById("confirmationCode").innerText = code;
             document.getElementById("successModal").style.display = "block";
-
-            // Start polling for status
+            pollCount = 0;
             startStatusPolling(code, bookingData);
         }
 
         function startStatusPolling(code, bookingData) {
-            // Check immediately
             checkStatus(code, bookingData);
+        }
 
-            // Then check every 5 seconds
-            statusCheckInterval = setInterval(() => {
-                checkStatus(code, bookingData);
-            }, 5000);
+        function scheduleNextPoll(code, bookingData) {
+            const interval = POLL_INTERVALS[Math.min(pollCount, POLL_INTERVALS.length - 1)] * 1000;
+            pollCount++;
+            statusCheckTimeout = setTimeout(() => {
+                if (document.hidden) {
+                    // Page not visible, wait until it is
+                    const onVisible = () => {
+                        document.removeEventListener('visibilitychange', onVisible);
+                        checkStatus(code, bookingData);
+                    };
+                    document.addEventListener('visibilitychange', onVisible);
+                } else {
+                    checkStatus(code, bookingData);
+                }
+            }, interval);
         }
 
         async function checkStatus(code, bookingData) {
             try {
-                // Add cache-busting parameter to prevent browser caching
                 const res = await fetch(`/api/status/${code}?t=${Date.now()}`, {
                     cache: 'no-store'
                 });
-                if (!res.ok) return;
+                if (!res.ok) { scheduleNextPoll(code, bookingData); return; }
 
                 const data = await res.json();
-                console.log('Status check:', data.status); // Debug log
 
                 if (data.status === 'confirmed') {
-                    // Stop polling
-                    if (statusCheckInterval) {
-                        clearInterval(statusCheckInterval);
-                        statusCheckInterval = null;
-                    }
-
-                    // Show confirmed state
                     document.getElementById("statusPending").style.display = "none";
                     document.getElementById("statusConfirmed").style.display = "block";
                     document.getElementById("confirmationCodeConfirmed").innerText = code;
-
-                    // Show booking details
                     document.getElementById("bookingDetails").innerHTML = `
                         <div class="detail-row">
                             <span class="label">📅 Дата</span>
@@ -618,20 +636,16 @@
                             <span class="value">${data.service}</span>
                         </div>
                     `;
-
                 } else if (data.status === 'rejected') {
-                    // Stop polling
-                    if (statusCheckInterval) {
-                        clearInterval(statusCheckInterval);
-                        statusCheckInterval = null;
-                    }
-
-                    // Show rejected state
                     document.getElementById("statusPending").style.display = "none";
                     document.getElementById("statusRejected").style.display = "block";
+                } else {
+                    // Still pending, continue polling
+                    scheduleNextPoll(code, bookingData);
                 }
             } catch (e) {
                 console.error('Status check failed:', e);
+                scheduleNextPoll(code, bookingData);
             }
         }
 
