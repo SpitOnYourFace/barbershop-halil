@@ -42,6 +42,11 @@ app.use(cors({
 
 app.use(bodyParser.json());
 
+// Trust proxy in production (Render, Railway, etc.)
+if (process.env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+}
+
 // Session middleware for admin authentication
 app.use(session({
     secret: process.env.SESSION_SECRET || 'fallback-secret-key',
@@ -147,10 +152,8 @@ const WORK_HOURS = [
 
 // Auth middleware for admin routes
 function requireAuth(req, res, next) {
-    if (req.session && req.session.isAdmin) {
-        return next();
-    }
-    return res.status(401).json({ error: 'Unauthorized. Please login.' });
+    // DEMO MODE: auth disabled
+    return next();
 }
 
 // ============ PUBLIC API ============
@@ -324,11 +327,8 @@ app.post('/api/admin/logout', (req, res) => {
 });
 
 app.get('/api/admin/check-auth', (req, res) => {
-    if (req.session && req.session.isAdmin) {
-        res.json({ authenticated: true });
-    } else {
-        res.json({ authenticated: false });
-    }
+    // DEMO MODE: always authenticated
+    res.json({ authenticated: true });
 });
 
 // ============ PROTECTED ADMIN API ============
